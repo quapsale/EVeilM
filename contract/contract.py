@@ -1,6 +1,5 @@
 import copy
 from contract.metadata import isolate_metadata_cbor
-from opcodes.opcode_dict import *
 from opcodes.opcodes import *
 from disassembler.disassembler import opcode_to_bytecode, bytecode_to_opcode
 from utils.hex_math import *
@@ -13,22 +12,30 @@ class Contract:
 
         Parameters:
             filename (str): The name of the file containing the contract's bytecode.
-            bytecode (list): The EVM bytecode of the contract.
+            bytecode (list): The EVM bytecode of the contract (combined creation + runtime).
         """
         self.name = filename.split("/")[-1].split(".evm")[0]  # Extract contract name from filename
-        self.creation_bytecode, self.bytecode = isolate_creation_runtime_bytecode(bytecode)  # Separate creation and runtime bytecode
-        self.metadata, self.cbor_2bytes, self.ipfs = isolate_metadata_cbor(self.bytecode)  # Isolate metadata, CBOR data, and unknown data
-        self.opcode = bytecode_to_opcode(self.bytecode)  # Convert runtime bytecode to opcode list
-        self.creation_opcode = bytecode_to_opcode(self.creation_bytecode)  # Convert creation bytecode to opcode list
-        self.creation_length = len("".join(self.creation_bytecode)) // 2  
-        self.runtime_length = len(self.bytecode) // 2  
-        self.creation_runtime_length = len(self.creation_bytecode + self.bytecode) // 2  # Calculate total bytecode length
 
-        self.original_contract_length = copy.deepcopy(self.runtime_length)  # Store original contract length
+        # Treat the entire incoming bytecode as the "main" bytecode:
+        self._bytecode = bytecode  # Store raw bytecode
+        self._opcode = bytecode_to_opcode(bytecode)  # Convert to opcode objects
 
-        self.func_sig = {}  # Initialize function signatures dictionary
+        # Because we no longer differentiate, we can remove references to 'creation' or 'runtime' separation:
+        self.creation_bytecode = []  # No creation bytecode
+        self.creation_length = 0
+        self.bytecode = bytecode    # Will call setter below
 
-    # Getters and setters for bytecode and opcode
+        # Metadata
+        self.metadata, self.cbor_2bytes, self.ipfs = isolate_metadata_cbor(self._bytecode)
+
+        # Length tracking
+        self.length = len(bytecode) // 2
+        self.original_length = copy.deepcopy(self.length)
+
+        # Placeholder for function signatures, etc.
+        self.func_sig = {}
+
+    # Bytecode and opcode getters/setters
     @property
     def bytecode(self):
         return self._bytecode
@@ -37,8 +44,7 @@ class Contract:
     def bytecode(self, new_bytecode):
         self._bytecode = new_bytecode
         self._opcode = bytecode_to_opcode(new_bytecode)
-        self.runtime_length = len(new_bytecode) // 2
-        self.creation_runtime_length = len(self.creation_bytecode + new_bytecode) // 2
+        self.length = len(new_bytecode) // 2
 
     @property
     def opcode(self):
@@ -49,20 +55,7 @@ class Contract:
         self._opcode = new_opcode_list
         new_bytecode = opcode_to_bytecode(new_opcode_list)
         self._bytecode = new_bytecode
-        self.runtime_length = len(new_bytecode) // 2
-        self.creation_runtime_length = len("".join(self.creation_bytecode) + new_bytecode) // 2
-
-    @property
-    def creation_opcode(self):
-        return self._creation_opcode
-
-    @creation_opcode.setter
-    def creation_opcode(self, new_creation_opcode):
-        self._creation_opcode = new_creation_opcode
-        new_creation_bytecode = opcode_to_bytecode(new_creation_opcode)
-        self.creation_bytecode = new_creation_bytecode
-        self.creation_length = len(new_creation_bytecode) // 2
-        self.creation_runtime_length = len(new_creation_bytecode + self.bytecode) // 2
+        self.length = len(new_bytecode) // 2
 
     def __str__(self) -> str:
         pc_opcode = pc_opcode_dict(self.opcode)
@@ -70,7 +63,7 @@ class Contract:
         
         for pc, opcode in pc_opcode.items():
             if opcode.pc != hex(pc)[2:]:
-                print(f"Error at {pc} : {opcode.pc} != {hex(pc)[2:]} A pc update is required somewhere")
+                print(f"Error at {pc} : {opcode.pc} != {hex(pc)[2:]} (PC update issue)")
             
             opcode_infos = f"({opcode.pc}) {opcode.opcode[2:]} {opcode.name} {c.rst}\n"
             if((isinstance(opcode, (JUMPDEST, JUMPI, PUSH)) and opcode.random)):
@@ -92,18 +85,19 @@ class Contract:
         """
         pc_opcode = pc_opcode_dict(self.opcode)
         jumpdest_list = []
-        for opcode in pc_opcode.values():
-            if isinstance(opcode, JUMPDEST):
-                if not random_jumpdest and not opcode.linked:
-                    jumpdest_list.append(opcode)
-                elif random_jumpdest and opcode.random:
-                    jumpdest_list.append(opcode)
-
+        for opcode_obj in pc_opcode.values():
+            if isinstance(opcode_obj, JUMPDEST):
+                # If random_jumpdest is False, only gather "normal" jumpdest
+                if not random_jumpdest and not opcode_obj.linked:
+                    jumpdest_list.append(opcode_obj)
+                # Else gather those that are specifically flagged random
+                elif random_jumpdest and opcode_obj.random:
+                    jumpdest_list.append(opcode_obj)
         return jumpdest_list
 
     def link_jumpdest_push(self):
         """
-        Link JUMP and JUMPI opcodes in the contract to their corresponding JUMPDESTs.
+        Link JUMP and JUMPI opcodes to their corresponding JUMPDESTs.
         """
         print("Linking JUMPDESTs to PUSHs")
 
@@ -130,69 +124,39 @@ class Contract:
         Update the program counter (PC) for each opcode in the contract's opcode list.
         """
         pc_opcode = pc_opcode_dict(self.opcode)
-        for pc, opcode in pc_opcode.items():
-            opcode.pc = hex(pc)[2:]
+        for pc, opcode_obj in pc_opcode.items():
+            opcode_obj.pc = hex(pc)[2:]
         self.opcode = self.opcode
 
     def get_full_bytecode(self):
         """
-        Return the full bytecode of the contract, concatenate creation and runtime bytecode.
+        Return the full bytecode (which in this case is just self.bytecode).
         """
-        full_bytecode = self.creation_bytecode + self.bytecode
-        return full_bytecode
-    
+        return self.bytecode
+
     def get_pc(self, unknown_opcode: OPCODE):
         """
-        Conpute PC of unknown_opcode present in contract
+        Compute PC of a given opcode object in the contract.
         """
         pc_opcode = pc_opcode_dict(self.opcode)
         pc_b10 = 0
-        for pc, opcode in pc_opcode.items():
-            if opcode is unknown_opcode:
+        for pc, opcode_obj in pc_opcode.items():
+            if opcode_obj is unknown_opcode:
                 return pc_b10
             pc_b10 += 1
- 
+
+
 def pc_opcode_dict(opcode_list):
     """
-    Create a dictionnary of OPCODE objects with their corrresponding PC as their key
-
-    Parameters: opcode_list (list): Opcode list
+    Create a dictionary of OPCODE objects keyed by their PC (program counter).
     """
-    pc = int("0", base=16)
+    pc = 0
     pc_bytecode_dict = {}
-    iter_opcode = iter(opcode_list)
-    for opcode in iter_opcode:
+    for opcode in opcode_list:
+        pc_bytecode_dict[pc] = opcode
+        # If PUSH, skip extra bytes as needed
         if isinstance(opcode, PUSH):
-            pc_bytecode_dict[pc] = opcode
             pc += opcode.byte_amount + 1
         else:
-            pc_bytecode_dict[pc] = opcode
             pc += 1
-
     return pc_bytecode_dict
-
-
-def isolate_creation_runtime_bytecode(bytecode: str):
-    """
-    Isolate the creation and runtime bytecode from a given full bytecode sequence.
-    
-    Parameters:
-        bytecode (str): The full bytecode sequence as a hexadecimal string.
-    """
-    index = 0
-    runtime_bytecode = bytecode
-    creation_bytecode = []
-    for byte in bytecode:
-        if ((byte == "f3" or byte == "fe") and (bytecode[index+1] == "00" or bytecode[index+1] == "fe")):
-            runtime_bytecode = bytecode[index+2:]   #+2 to include/exclude 0xf3 & 0xfe
-            creation_bytecode = bytecode[:index+2]
-            return creation_bytecode, runtime_bytecode
-        elif (byte == "fe" and (bytecode[index+1] == "60" and bytecode[index+2] == "80")): #for Seaport
-            print("End of Creation code ending with 'fe' only")
-            runtime_bytecode = bytecode[index+1:]   #+2 to include/exclude 0xf3 & 0xfe
-            creation_bytecode = bytecode[:index+1]
-            return creation_bytecode, runtime_bytecode
-        index += 1
-    throw = Exception("No end of creation code found")
-    
-
