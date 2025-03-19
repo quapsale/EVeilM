@@ -84,7 +84,10 @@ class Obfuscator:
                 if name == "FUNC_SELECTOR" and self.obf_type in ("full", "funcsigtransfo"):
                     print(f"\nApplying {c.Bold}Function Signature Transformer{c.rst}...")
                     added_bytes = self.func_sig_transformer(i, window)
-                    i += added_bytes
+                    if added_bytes == 0:
+                        i += len(pattern)
+                    else:
+                        i += added_bytes
                     self.contract.update_pc()
 
                 elif name == "JUMPTRANSFO" and not is_opcode_list_obfuscated(window) and self.obf_type in ("full", "jumptransfo"):

@@ -1,16 +1,13 @@
 import sys
 import os
-import multiprocessing
 from obfuscator.obfuscator import Obfuscator
 from disassembler.disassembler import evmcode_string_to_list
 from contract.contract import Contract
 
-TIMEOUT = 120
-
 def obfuscate_bytecode(bytecode, contract_name):
     """
     Obfuscates a given bytecode string using the Obfuscator with mode='full'.
-    Returns the obfuscated bytecode or a placeholder if it times out.
+    Returns the obfuscated bytecode or an error string if something fails.
     """
     try:
         evmcode = evmcode_string_to_list(bytecode)
@@ -25,22 +22,11 @@ def obfuscate_bytecode(bytecode, contract_name):
     except Exception as e:
         return f"ERROR: {str(e)}"
 
-def obfuscate_with_timeout(bytecode, contract_name):
-    """
-    Runs obfuscate_bytecode in a separate process with a timeout.
-    """
-    with multiprocessing.Pool(1) as pool:
-        result = pool.apply_async(obfuscate_bytecode, (bytecode, contract_name))
-        try:
-            return result.get(TIMEOUT)  # Get result with timeout
-        except multiprocessing.TimeoutError:
-            return "PLACEHOLDER: Skipped due to timeout"
-
 def obfuscate_lines(input_file, output_file):
     """
     Read each line in 'input_file' as a separate bytecode string,
-    obfuscate it using Obfuscator (with mode='full') with a timeout,
-    and write each result as a line in 'output_file'.
+    obfuscate it using the Obfuscator (with mode='full'), and write 
+    each result as a line in 'output_file'.
     """
     with open(input_file, 'r') as fin, open(output_file, 'w') as fout:
         for i, line in enumerate(fin, start=1):
@@ -50,8 +36,7 @@ def obfuscate_lines(input_file, output_file):
                 continue
 
             contract_name = f"contract_{i}"
-            obf_bytecode = obfuscate_with_timeout(bytecode, contract_name)
-
+            obf_bytecode = obfuscate_bytecode(bytecode, contract_name)
             fout.write(obf_bytecode + "\n")
 
 def main():
